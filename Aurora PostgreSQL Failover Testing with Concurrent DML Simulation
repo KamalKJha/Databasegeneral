@@ -1,0 +1,145 @@
+Overview
+This document describes the setup and usage of a Python-based test tool that simulates multiple client connections to an Amazon Aurora PostgreSQL database via RDS Proxy. It performs concurrent SELECT, INSERT, and UPDATE operations while monitoring and logging behavior during failover scenarios.
+
+The script helps validate connection resilience, failover duration, and DML operation reliability under stress and simulated outages.
+
+Features
+Simulates multiple clients (like pgbench -c N) using Python threads.
+
+Performs:
+
+SELECT now()
+
+INSERT INTO test_failover
+
+UPDATE test_failover
+
+Handles failover gracefully using automatic retry logic.
+
+Tracks:
+
+Connection errors
+
+Reconnect events
+
+DML failures and successes
+
+Logs detailed events in a CSV file.
+
+Prints a live summary of DML operation counts per client.
+
+Requirements
+Python 3.7+
+
+Install dependencies:
+
+bash
+Copy
+Edit
+pip install psycopg2-binary
+Setup Instructions
+1. Aurora PostgreSQL & RDS Proxy
+Ensure:
+
+You have an Aurora PostgreSQL cluster (compatible with RDS Proxy).
+
+RDS Proxy is created and points to the Aurora cluster.
+
+The user used in this script has permissions:
+
+CREATE TABLE, INSERT, UPDATE, SELECT
+
+2. Create Test Table (auto-created by script if permissions allow)
+sql
+Copy
+Edit
+CREATE TABLE IF NOT EXISTS test_failover (
+    id SERIAL PRIMARY KEY,
+    client_id INT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+3. Update Script Configuration
+Edit the following values in the script:
+
+python
+Copy
+Edit
+DB_CONFIG = {
+    "host": "your-rds-proxy-endpoint.rds.amazonaws.com",
+    "port": 5432,
+    "user": "your_user",
+    "password": "your_password",
+    "dbname": "your_dbname",
+}
+You can also adjust:
+
+CLIENT_COUNT: Number of concurrent simulated clients
+
+QUERY_INTERVAL: Time between operations
+
+RETRY_INTERVAL: Wait time before retry on failure
+
+How to Run the Script
+bash
+Copy
+Edit
+python aurora_failover_dml_test.py
+This will:
+
+Create the test_failover table if it doesn't exist
+
+Start CLIENT_COUNT client threads
+
+Log all activity to failover_dml_log.csv
+
+Periodically print a DML summary like this:
+
+pgsql
+Copy
+Edit
+===== DML Summary =====
+Client-1: INSERT ✓ 12 ✗ 1 | UPDATE ✓ 12 ✗ 1
+Client-2: INSERT ✓ 13 ✗ 0 | UPDATE ✓ 13 ✗ 0
+Client-3: INSERT ✓ 11 ✗ 2 | UPDATE ✓ 11 ✗ 2
+=======================
+Performing a Failover Test
+Let the script run for 30–60 seconds.
+
+Trigger a failover using one of the following:
+
+Option A: AWS Console
+Navigate to RDS → Aurora Cluster → Failover
+
+Option B: AWS CLI
+bash
+Copy
+Edit
+aws rds failover-db-cluster --db-cluster-identifier <your-cluster-id>
+Monitor the terminal and failover_dml_log.csv for:
+
+query_failed
+
+dml_failed
+
+reconnect
+
+Time taken between failure and recovery
+
+Sample Output (CSV)
+pgsql
+Copy
+Edit
+timestamp,client,event_type,message
+2025-04-02T17:00:20,Client-3,insert_success,Inserted one row
+2025-04-02T17:00:21,Client-3,query_failed,server closed the connection unexpectedly
+2025-04-02T17:00:22,Client-3,reconnect,Attempting to reconnect
+2025-04-02T17:00:25,Client-3,connected,Connection established
+Advanced Options (Optional Enhancements)
+Customize SQL mix: Add DELETEs or complex JOINs
+
+Store metrics in a database or send to Prometheus/Grafana
+
+Use asyncio for higher concurrency performance
+
+Wrap script as a CLI tool for configurable test plans
