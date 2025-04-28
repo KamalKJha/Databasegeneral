@@ -1,11 +1,11 @@
 -- #############################################################################
--- # Script Name: rds_awr_report.sql
--- # Description: Generates an AWR-like performance report using DBA_HIST_* views
--- #              Suitable for Oracle RDS instances where AWR data is accessible.
--- # Author:      Kamal Jha
--- # Version:     1.1 (AWR Snap ID input)
--- # Usage:       Run in SQL*Plus or SQLcl. Provides prompts for Snap IDs.
--- # Requires:    Access to DBA_HIST_* views (AWR). Diagnostic Pack license needed.
+-- # Script Name: rds_perf_report.sql
+-- # Description: Generates an AWR-like performance report using V$ views
+-- #              Suitable for Oracle RDS Read Replicas.
+-- # Author:      AI Assistant
+-- # Version:     1.0
+-- # Usage:       Run in SQL*Plus or SQLcl. Provides prompts for time window.
+-- # Requires:    Access to V$ views, particularly V$ACTIVE_SESSION_HISTORY.
 -- #############################################################################
 
 -- #############################
@@ -23,52 +23,17 @@ SET NUMWIDTH 15
 SET SQLBLANKLINES ON
 
 -- #############################
--- # Define Snapshot Window
+-- # Define Time Window
 -- #############################
-DEFINE begin_snap_id = &begin_snap_id
-DEFINE end_snap_id = &end_snap_id
-
--- #############################
--- # Get DBID and Instance Number for filtering AWR views
--- #############################
-COLUMN dbid NEW_VALUE v_dbid NOPRINT
-COLUMN instance_number NEW_VALUE v_instance_number NOPRINT
-SELECT dbid FROM v$database;
-SELECT instance_number FROM v$instance;
-
--- #############################
--- # Get Snapshot Times for display and duration calculation
--- #############################
-COLUMN begin_snap_time NEW_VALUE v_begin_snap_time NOPRINT
-COLUMN end_snap_time NEW_VALUE v_end_snap_time NOPRINT
-COLUMN snap_duration_secs NEW_VALUE v_snap_duration_secs NOPRINT
-
-SELECT TO_CHAR(begin_interval_time, 'YYYY-MM-DD HH24:MI:SS') AS begin_snap_time,
-       (CAST(end_interval_time AS DATE) - CAST(begin_interval_time AS DATE)) * 86400 AS snap_duration_secs
-FROM dba_hist_snapshot
-WHERE snap_id = &begin_snap_id
-  AND dbid = &v_dbid
-  AND instance_number = &v_instance_number;
-
-SELECT TO_CHAR(end_interval_time, 'YYYY-MM-DD HH24:MI:SS') AS end_snap_time
-FROM dba_hist_snapshot
-WHERE snap_id = &end_snap_id
-  AND dbid = &v_dbid
-  AND instance_number = &v_instance_number;
-
--- Handle case where duration might be zero or snaps invalid
-VARIABLE snap_duration_secs NUMBER;
-BEGIN
-  :snap_duration_secs := GREATEST(1, TO_NUMBER('&v_snap_duration_secs'));
-END;
-/
-
+-- Prompt user for the beginning and end timestamps for the analysis window
+DEFINE begin_time = &begin_time
+DEFINE end_time = &end_time
 
 -- #############################
 -- # Generate Report Filename
 -- #############################
 COLUMN report_filename NEW_VALUE report_filename NOPRINT
-SELECT 'rds_awr_report_' || d.name || '_' || i.instance_name || '_snap_' || &begin_snap_id || '_' || &end_snap_id || '_' || TO_CHAR(SYSDATE, 'YYYYMMDD_HH24MISS') || '.txt' AS report_filename
+SELECT 'rds_perf_report_' || d.name || '_' || i.instance_name || '_' || TO_CHAR(SYSDATE, 'YYYYMMDD_HH24MISS') || '.txt' AS report_filename
   FROM v$database d, v$instance i;
 
 -- #############################
@@ -80,48 +45,41 @@ SPOOL &report_filename
 -- # Header
 -- #############################
 PROMPT #############################################################################
-PROMPT # Oracle Performance Report (using DBA_HIST Views - AWR)
+PROMPT # Oracle Performance Report (using V$ Views) for RDS Read Replica
 PROMPT #############################################################################
 PROMPT
-PROMPT DB Name          DB Id    Instance     Inst Num Release     RAC Host
-PROMPT ------------ ----------- ------------ -------- ----------- --- ------------
-SELECT d.name,
-       d.dbid,
-       i.instance_name,
-       i.instance_number,
-       i.version,
-       i.parallel,
-       i.host_name
-  FROM v$database d, v$instance i; -- Use V$ here for current info
-
-PROMPT
-PROMPT Snapshot Range: &begin_snap_id to &end_snap_id
-PROMPT Snap Start Time: &v_begin_snap_time
-PROMPT Snap End Time:   &v_end_snap_time
-PROMPT Duration (secs): &v_snap_duration_secs
-PROMPT Report Generated: Format(systimestamp, 'YYYY-MM-DD HH24:MI:SS TZR')
+PROMPT Report Time Range: &begin_time to &end_time
+PROMPT Report Generated:  Format(systimestamp, 'YYYY-MM-DD HH24:MI:SS TZR')
 PROMPT
 
 -- #############################################################################
--- # Section 1: Database Details (From Snapshot)
+-- # Section 1: Database Details
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 1. DATABASE & INSTANCE DETAILS (From Snapshot & Current)
+PROMPT # 1. DATABASE DETAILS
 PROMPT #############################################################################
 PROMPT
 
-PROMPT ## Instance Details from Snapshot &end_snap_id ##
-COLUMN startup_time FORMAT A20 HEADING 'Startup Time'
-SELECT startup_time
-FROM dba_hist_database_instance
-WHERE dbid = &v_dbid
-  AND instance_number = &v_instance_number
-  AND startup_time <= (SELECT end_interval_time FROM dba_hist_snapshot WHERE snap_id = &end_snap_id AND dbid = &v_dbid AND instance_number = &v_instance_number)
-ORDER BY startup_time DESC
-FETCH FIRST 1 ROW ONLY;
+PROMPT ## Database Information ##
+COLUMN name           FORMAT A15 HEADING 'DB Name'
+COLUMN dbid           FORMAT 9999999999 HEADING 'DB Id'
+COLUMN created        FORMAT A20 HEADING 'Created'
+COLUMN log_mode       FORMAT A15 HEADING 'Log Mode'
+COLUMN open_mode      FORMAT A15 HEADING 'Open Mode'
+COLUMN platform_name  FORMAT A30 HEADING 'Platform'
+SELECT name, dbid, created, log_mode, open_mode, platform_name FROM v$database;
 
 PROMPT
-PROMPT ## Key Parameters (Current Value) ##
+PROMPT ## Instance Information ##
+COLUMN instance_name  FORMAT A15 HEADING 'Instance Name'
+COLUMN host_name      FORMAT A30 HEADING 'Host Name'
+COLUMN version        FORMAT A20 HEADING 'Version'
+COLUMN startup_time   FORMAT A20 HEADING 'Startup Time'
+COLUMN status         FORMAT A15 HEADING 'Status'
+SELECT instance_name, host_name, version, TO_CHAR(startup_time, 'YYYY-MM-DD HH24:MI') AS startup_time, status FROM v$instance;
+
+PROMPT
+PROMPT ## Key Parameters ##
 COLUMN name          FORMAT A30 HEADING 'Parameter Name'
 COLUMN value         FORMAT A30 HEADING 'Value'
 COLUMN isdefault     FORMAT A7 HEADING 'Default'
@@ -129,39 +87,51 @@ SELECT name, value, isdefault FROM v$parameter
 WHERE name IN ('cpu_count', 'sga_target', 'sga_max_size', 'pga_aggregate_target', 'pga_aggregate_limit', 'memory_target', 'memory_max_target', 'parallel_max_servers', 'parallel_servers_target', 'optimizer_mode', 'statistics_level')
 ORDER BY name;
 
-
 PROMPT
 
 -- #############################################################################
--- # Section 2: Load Profile (Delta between Snapshots)
+-- # Section 2: Load Profile
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 2. LOAD PROFILE (Delta between Snapshots &begin_snap_id and &end_snap_id)
+PROMPT # 2. LOAD PROFILE (Based on ASH samples and cumulative V$SYSSTAT)
 PROMPT #############################################################################
 PROMPT
+PROMPT ## Activity based on V$ACTIVE_SESSION_HISTORY (&begin_time to &end_time) ##
+PROMPT Note: Represents sampled activity, not exact totals like AWR.
 
+DECLARE
+  l_start_time DATE := TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS');
+  l_end_time   DATE := TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS');
+  l_duration_secs NUMBER;
+  l_db_time_secs  NUMBER;
+  l_avg_active_sessions NUMBER;
+BEGIN
+  l_duration_secs := GREATEST(1, (l_end_time - l_start_time) * 86400); -- Avoid division by zero
+
+  SELECT COUNT(*) INTO l_db_time_secs
+  FROM v$active_session_history
+  WHERE sample_time BETWEEN l_start_time AND l_end_time
+    AND session_state = 'WAITING' AND wait_class <> 'Idle' -- Waiting non-idle
+     OR session_state = 'ON CPU';                          -- On CPU
+
+  l_avg_active_sessions := l_db_time_secs / l_duration_secs;
+
+  DBMS_OUTPUT.PUT_LINE('Duration of Analysis Window (sec): ' || ROUND(l_duration_secs, 2));
+  DBMS_OUTPUT.PUT_LINE('Total DB Time (sampled sec):       ' || l_db_time_secs);
+  DBMS_OUTPUT.PUT_LINE('Average Active Sessions (sampled): ' || ROUND(l_avg_active_sessions, 2));
+END;
+/
+
+PROMPT
+PROMPT ## Cumulative Statistics from V$SYSSTAT (Since Instance Startup) ##
+PROMPT Note: These are totals since startup, NOT interval specific.
 COLUMN name           FORMAT A35 HEADING 'Statistic Name'
-COLUMN per_second     FORMAT 999,999,990.99 HEADING 'Per Second'
-COLUMN per_txn        FORMAT 999,999,990.99 HEADING 'Per Transaction'
-
-WITH sysstat_delta AS (
-    SELECT stat_name,
-           SUM(CASE WHEN snap_id = &end_snap_id THEN value ELSE -value END) as delta_value
-    FROM dba_hist_sysstat
-    WHERE snap_id IN (&begin_snap_id, &end_snap_id)
-      AND dbid = &v_dbid
-      AND instance_number = &v_instance_number
-    GROUP BY stat_name
-    HAVING SUM(CASE WHEN snap_id = &end_snap_id THEN value ELSE -value END) != 0 -- Exclude stats with no change
-)
-SELECT
-    s.stat_name AS name,
-    s.delta_value / &v_snap_duration_secs AS per_second,
-    s.delta_value / GREATEST(1, (SELECT delta_value FROM sysstat_delta WHERE stat_name = 'user commits') + (SELECT delta_value FROM sysstat_delta WHERE stat_name = 'user rollbacks')) AS per_txn
-FROM sysstat_delta s
-WHERE s.stat_name IN (
-    'DB time',
-    'DB CPU', -- Or 'CPU used by this session' check name carefully
+COLUMN value          FORMAT 999,999,999,999,999 HEADING 'Total Value'
+SELECT name, value
+FROM v$sysstat
+WHERE name IN (
+    'DB time', -- Cumulative DB Time stat (often different from ASH calculation)
+    'CPU used by this session', -- Might reflect cumulative CPU for sys/bg processes
     'physical reads',
     'physical writes',
     'redo size',
@@ -176,34 +146,15 @@ WHERE s.stat_name IN (
 )
 ORDER BY name;
 
--- Calculate Average Active Sessions
-DECLARE
-  l_db_time_us NUMBER;
-  l_aas        NUMBER;
-BEGIN
-  SELECT SUM(CASE WHEN snap_id = &end_snap_id THEN value ELSE -value END)
-  INTO l_db_time_us
-  FROM dba_hist_sysstat
-  WHERE stat_name = 'DB time'
-    AND snap_id IN (&begin_snap_id, &end_snap_id)
-    AND dbid = &v_dbid
-    AND instance_number = &v_instance_number;
-
-  l_aas := (l_db_time_us / 1000000) / GREATEST(1, &v_snap_duration_secs); -- DB Time is often in microseconds
-
-  DBMS_OUTPUT.PUT_LINE('Average Active Sessions: ' || ROUND(l_aas, 2));
-END;
-/
-
 PROMPT
 
 -- #############################################################################
--- # Section 3: Top Wait Events (Delta between Snapshots using ASH)
+-- # Section 3: Top Wait Events
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 3. TOP WAIT EVENTS (Based on DBA_HIST_ACTIVE_SESS_HISTORY)
+PROMPT # 3. TOP WAIT EVENTS (Based on V$ACTIVE_SESSION_HISTORY)
 PROMPT #############################################################################
-PROMPT Snapshot Range: &begin_snap_id to &end_snap_id
+PROMPT Time Range: &begin_time to &end_time
 PROMPT
 
 PROMPT ## Top 10 Foreground Wait Events ##
@@ -213,155 +164,144 @@ COLUMN total_wait_sec FORMAT 999,999,990 HEADING 'Total Wait|Seconds'
 COLUMN pct_total      FORMAT 990.99 HEADING '% Total|DB Time'
 
 WITH ash_waits AS (
-    SELECT wait_class, event_name as event, session_type, time_waited -- time_waited in ASH already accounts for sampling interval * wait time
-    FROM dba_hist_active_sess_history
-    WHERE snap_id > &begin_snap_id AND snap_id <= &end_snap_id -- Standard AWR interval for ASH
-      AND dbid = &v_dbid
-      AND instance_number = &v_instance_number
+    SELECT wait_class, event, session_type, COUNT(*) as wait_count
+    FROM v$active_session_history
+    WHERE sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
       AND session_state = 'WAITING'
       AND wait_class <> 'Idle'
-),
-ash_cpu AS (
-    SELECT time_waited -- Treat 'CPU time' as time_waited when session_state is ON CPU
-    FROM dba_hist_active_sess_history
-    WHERE snap_id > &begin_snap_id AND snap_id <= &end_snap_id
-      AND dbid = &v_dbid
-      AND instance_number = &v_instance_number
-      AND session_state = 'ON CPU'
-),
-agg_waits AS (
-    SELECT wait_class, event, session_type, SUM(time_waited) / 1000000 as total_wait_secs -- time_waited is microseconds
-    FROM ash_waits
     GROUP BY wait_class, event, session_type
 ),
 total_db_time AS (
-    SELECT (SUM(total_wait_secs) + (SELECT SUM(time_waited)/1000000 FROM ash_cpu)) as total_time
-    FROM agg_waits
+    SELECT SUM(wait_count) as total_samples
+    FROM ash_waits
+    UNION ALL -- Add CPU time
+    SELECT COUNT(*)
+    FROM v$active_session_history
+    WHERE sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
+      AND session_state = 'ON CPU'
 )
 SELECT
     aw.wait_class,
     aw.event,
-    ROUND(aw.total_wait_secs) AS total_wait_sec,
-    ROUND((aw.total_wait_secs / GREATEST(1, (SELECT total_time FROM total_db_time))) * 100, 2) AS pct_total
-FROM agg_waits aw
+    aw.wait_count AS total_wait_sec,
+    (aw.wait_count / GREATEST(1, (SELECT SUM(total_samples) FROM total_db_time))) * 100 AS pct_total
+FROM ash_waits aw
 WHERE aw.session_type = 'FOREGROUND'
 ORDER BY total_wait_sec DESC
-FETCH FIRST 10 ROWS ONLY;
+FETCH FIRST 10 ROWS ONLY; -- Or use ROWNUM <= 10 for older Oracle versions
 
 PROMPT
 PROMPT ## Top 10 Background Wait Events ##
 SELECT
     aw.wait_class,
     aw.event,
-    ROUND(aw.total_wait_secs) AS total_wait_sec,
-    ROUND((aw.total_wait_secs / GREATEST(1, (SELECT total_time FROM total_db_time))) * 100, 2) AS pct_total
-FROM agg_waits aw -- Reusing CTEs from above
+    aw.wait_count AS total_wait_sec,
+    (aw.wait_count / GREATEST(1, (SELECT SUM(total_samples) FROM total_db_time))) * 100 AS pct_total
+FROM ash_waits aw -- Reusing CTEs from above
 WHERE aw.session_type = 'BACKGROUND'
 ORDER BY total_wait_sec DESC
-FETCH FIRST 10 ROWS ONLY;
+FETCH FIRST 10 ROWS ONLY; -- Or use ROWNUM <= 10 for older Oracle versions
 
 PROMPT
 
 -- #############################################################################
--- # Section 4: Top SQL Statements (Delta between Snapshots)
+-- # Section 4: Top SQL Statements
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 4. TOP SQL STATEMENTS (Delta between Snapshots &begin_snap_id and &end_snap_id)
+PROMPT # 4. TOP SQL STATEMENTS (Based on V$ACTIVE_SESSION_HISTORY Activity)
 PROMPT #############################################################################
-PROMPT
+PROMPT Time Range: &begin_time to &end_time
+PROMPT Note: Elapsed/CPU time from ASH samples. Gets/Reads/Execs are CUMULATIVE totals from V$SQLSTATS.
 
 COLUMN sql_id           FORMAT A15 HEADING 'SQL ID'
-COLUMN elapsed_time_s   FORMAT 999,999,990.99 HEADING 'Elapsed Time (s)|(Delta)'
-COLUMN cpu_time_s       FORMAT 999,999,990.99 HEADING 'CPU Time (s)|(Delta)'
-COLUMN buffer_gets      FORMAT 9,999,999,990 HEADING 'Buffer Gets|(Delta)'
-COLUMN physical_reads   FORMAT 9,999,999,990 HEADING 'Physical Reads|(Delta)'
-COLUMN executions       FORMAT 9,999,999,990 HEADING 'Executions|(Delta)'
+COLUMN elapsed_time_s   FORMAT 999,999,990 HEADING 'Elapsed Time (s)|(Sampled)'
+COLUMN cpu_time_s       FORMAT 999,999,990 HEADING 'CPU Time (s)|(Sampled)'
+COLUMN buffer_gets      FORMAT 9,999,999,990 HEADING 'Buffer Gets|(Cumulative)'
+COLUMN physical_reads   FORMAT 9,999,999,990 HEADING 'Physical Reads|(Cumulative)'
+COLUMN executions       FORMAT 9,999,999,990 HEADING 'Executions|(Cumulative)'
 COLUMN sql_text         FORMAT A60 HEADING 'SQL Text Snippet' TRUNCATED
 
-WITH sqlstat_delta AS (
-  SELECT
-    sql_id,
-    SUM(CASE WHEN snap_id = &end_snap_id THEN elapsed_time_delta ELSE -elapsed_time_delta END)/1000000 AS elapsed_time_s,
-    SUM(CASE WHEN snap_id = &end_snap_id THEN cpu_time_delta ELSE -cpu_time_delta END)/1000000 AS cpu_time_s,
-    SUM(CASE WHEN snap_id = &end_snap_id THEN buffer_gets_delta ELSE -buffer_gets_delta END) AS buffer_gets,
-    SUM(CASE WHEN snap_id = &end_snap_id THEN disk_reads_delta ELSE -disk_reads_delta END) AS physical_reads,
-    SUM(CASE WHEN snap_id = &end_snap_id THEN executions_delta ELSE -executions_delta END) AS executions
-  FROM dba_hist_sqlstat
-  WHERE snap_id IN (&begin_snap_id, &end_snap_id)
-    AND dbid = &v_dbid
-    AND instance_number = &v_instance_number
-  GROUP BY sql_id
-  HAVING SUM(CASE WHEN snap_id = &end_snap_id THEN elapsed_time_delta ELSE -elapsed_time_delta END) > 0
-      OR SUM(CASE WHEN snap_id = &end_snap_id THEN cpu_time_delta ELSE -cpu_time_delta END) > 0
-      OR SUM(CASE WHEN snap_id = &end_snap_id THEN executions_delta ELSE -executions_delta END) > 0
+WITH ash_sql_activity AS (
+    SELECT
+        sql_id,
+        SUM(CASE WHEN session_state = 'ON CPU' THEN 1 ELSE 0 END) as cpu_secs,
+        COUNT(*) as elapsed_secs
+    FROM v$active_session_history
+    WHERE sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
+      AND sql_id IS NOT NULL
+      AND (session_state = 'ON CPU' OR (session_state = 'WAITING' AND wait_class <> 'Idle'))
+    GROUP BY sql_id
 )
 SELECT * FROM (
-  SELECT
-    sd.sql_id,
-    sd.elapsed_time_s,
-    sd.buffer_gets,
-    sd.physical_reads,
-    sd.executions,
-    SUBSTR(REPLACE(st.sql_text, CHR(10), ' '), 1, 60) AS sql_text
-  FROM sqlstat_delta sd
-  LEFT JOIN dba_hist_sqltext st ON sd.sql_id = st.sql_id AND st.dbid = &v_dbid -- Join to get text
-  ORDER BY sd.elapsed_time_s DESC
+    SELECT
+        a.sql_id,
+        a.elapsed_secs AS elapsed_time_s,
+        s.buffer_gets,
+        s.disk_reads AS physical_reads,
+        s.executions,
+        SUBSTR(REPLACE(s.sql_text, CHR(10), ' '), 1, 60) AS sql_text
+    FROM ash_sql_activity a
+    JOIN v$sqlstats s ON a.sql_id = s.sql_id
+    ORDER BY elapsed_time_s DESC
 ) WHERE ROWNUM <= 10;
 
 PROMPT
-PROMPT ## Top 10 SQL by CPU Time (Delta) ##
+PROMPT ## Top 10 SQL by CPU Time (Sampled) ##
 SELECT * FROM (
-  SELECT
-    sd.sql_id,
-    sd.cpu_time_s,
-    sd.buffer_gets,
-    sd.physical_reads,
-    sd.executions,
-    SUBSTR(REPLACE(st.sql_text, CHR(10), ' '), 1, 60) AS sql_text
-  FROM sqlstat_delta sd -- Reusing CTE
-  LEFT JOIN dba_hist_sqltext st ON sd.sql_id = st.sql_id AND st.dbid = &v_dbid
-  ORDER BY sd.cpu_time_s DESC
+    SELECT
+        a.sql_id,
+        a.cpu_secs AS cpu_time_s,
+        s.buffer_gets,
+        s.disk_reads AS physical_reads,
+        s.executions,
+        SUBSTR(REPLACE(s.sql_text, CHR(10), ' '), 1, 60) AS sql_text
+    FROM ash_sql_activity a -- Reusing CTE
+    JOIN v$sqlstats s ON a.sql_id = s.sql_id
+    WHERE a.cpu_secs > 0
+    ORDER BY cpu_time_s DESC
 ) WHERE ROWNUM <= 10;
 
 PROMPT
-PROMPT ## Top 10 SQL by Buffer Gets (Delta) ##
+PROMPT ## Top 10 SQL by Buffer Gets (Cumulative) ##
 SELECT * FROM (
-  SELECT
-    sd.sql_id,
-    sd.elapsed_time_s,
-    sd.buffer_gets,
-    sd.physical_reads,
-    sd.executions,
-    SUBSTR(REPLACE(st.sql_text, CHR(10), ' '), 1, 60) AS sql_text
-  FROM sqlstat_delta sd -- Reusing CTE
-  LEFT JOIN dba_hist_sqltext st ON sd.sql_id = st.sql_id AND st.dbid = &v_dbid
-  ORDER BY sd.buffer_gets DESC
+    SELECT
+        a.sql_id,
+        a.elapsed_secs AS elapsed_time_s,
+        s.buffer_gets,
+        s.disk_reads AS physical_reads,
+        s.executions,
+        SUBSTR(REPLACE(s.sql_text, CHR(10), ' '), 1, 60) AS sql_text
+    FROM ash_sql_activity a -- Reusing CTE
+    JOIN v$sqlstats s ON a.sql_id = s.sql_id
+    WHERE s.buffer_gets > 0
+    ORDER BY s.buffer_gets DESC
 ) WHERE ROWNUM <= 10;
 
 PROMPT
-PROMPT ## Top 10 SQL by Physical Reads (Delta) ##
+PROMPT ## Top 10 SQL by Physical Reads (Cumulative) ##
 SELECT * FROM (
-  SELECT
-    sd.sql_id,
-    sd.elapsed_time_s,
-    sd.buffer_gets,
-    sd.physical_reads,
-    sd.executions,
-    SUBSTR(REPLACE(st.sql_text, CHR(10), ' '), 1, 60) AS sql_text
-  FROM sqlstat_delta sd -- Reusing CTE
-  LEFT JOIN dba_hist_sqltext st ON sd.sql_id = st.sql_id AND st.dbid = &v_dbid
-  ORDER BY sd.physical_reads DESC
+    SELECT
+        a.sql_id,
+        a.elapsed_secs AS elapsed_time_s,
+        s.buffer_gets,
+        s.disk_reads AS physical_reads,
+        s.executions,
+        SUBSTR(REPLACE(s.sql_text, CHR(10), ' '), 1, 60) AS sql_text
+    FROM ash_sql_activity a -- Reusing CTE
+    JOIN v$sqlstats s ON a.sql_id = s.sql_id
+    WHERE s.disk_reads > 0
+    ORDER BY s.disk_reads DESC
 ) WHERE ROWNUM <= 10;
 
 PROMPT
 
 -- #############################################################################
--- # Section 5: Top Lock and Latch Events (Based on Historical ASH)
+-- # Section 5: Top Lock and Latch Events
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 5. TOP LOCK AND LATCH EVENTS (Based on DBA_HIST_ACTIVE_SESS_HISTORY)
+PROMPT # 5. TOP LOCK AND LATCH EVENTS (Based on V$ACTIVE_SESSION_HISTORY)
 PROMPT #############################################################################
-PROMPT Snapshot Range: &begin_snap_id to &end_snap_id
+PROMPT Time Range: &begin_time to &end_time
 
 PROMPT
 PROMPT ## Top 10 Lock Wait Events (enq:) ##
@@ -373,23 +313,19 @@ COLUMN object_type    FORMAT A18 HEADING 'Object Type'
 
 SELECT * FROM (
     SELECT
-        ash.event_name AS event,
-        SUM(ash.time_waited) / 1000000 AS total_wait_sec,
+        ash.event,
+        COUNT(*) AS total_wait_sec,
         o.owner,
         o.object_name,
         o.object_type
-    FROM dba_hist_active_sess_history ash
-    LEFT JOIN dba_objects o ON ash.current_obj# = o.object_id -- Join to DBA_OBJECTS (current name)
-    WHERE ash.snap_id > &begin_snap_id AND ash.snap_id <= &end_snap_id
-      AND ash.dbid = &v_dbid
-      AND ash.instance_number = &v_instance_number
-      AND ash.event_name LIKE 'enq:%'
-      AND ash.wait_class IN ('Application', 'Concurrency', 'Configuration')
-      AND ash.session_state = 'WAITING'
-    GROUP BY ash.event_name, o.owner, o.object_name, o.object_type
+    FROM v$active_session_history ash
+    LEFT JOIN dba_objects o ON ash.current_obj# = o.object_id -- Use DBA_OBJECTS if available, else V$OBJECTS might work
+    WHERE ash.sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
+      AND ash.event LIKE 'enq:%'
+      AND ash.wait_class IN ('Application', 'Concurrency', 'Configuration') -- Common lock classes
+    GROUP BY ash.event, o.owner, o.object_name, o.object_type
     ORDER BY total_wait_sec DESC
 ) WHERE ROWNUM <= 10;
-
 
 PROMPT
 PROMPT ## Top 10 Latch Wait Events ##
@@ -398,31 +334,28 @@ COLUMN total_wait_sec FORMAT 999,999,990 HEADING 'Total Wait|Seconds'
 
 SELECT * FROM (
     SELECT
-        event_name as event,
-        SUM(time_waited) / 1000000 AS total_wait_sec
-    FROM dba_hist_active_sess_history
-    WHERE snap_id > &begin_snap_id AND snap_id <= &end_snap_id
-      AND dbid = &v_dbid
-      AND instance_number = &v_instance_number
-      AND event_name LIKE 'latch:%'
+        event,
+        COUNT(*) AS total_wait_sec
+    FROM v$active_session_history
+    WHERE sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
+      AND event LIKE 'latch:%'
       AND wait_class = 'Concurrency'
-      AND session_state = 'WAITING'
-    GROUP BY event_name
+    GROUP BY event
     ORDER BY total_wait_sec DESC
 ) WHERE ROWNUM <= 10;
 
 PROMPT
 
 -- #############################################################################
--- # Section 6: Memory Advisory (From AWR History if available)
+-- # Section 6: Memory Advisory (Cumulative since Startup)
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 6. MEMORY ADVISORY (Based on DBA_HIST Views)
+PROMPT # 6. MEMORY ADVISORY (Based on V$ Views - Cumulative Data)
 PROMPT #############################################################################
-PROMPT Note: Showing advisory data from snapshot &end_snap_id.
+PROMPT Note: Advisory data reflects workload since instance startup.
 
 PROMPT
-PROMPT ## Buffer Pool Advisory (DBA_HIST_DB_CACHE_ADVICE) ##
+PROMPT ## Buffer Pool Advisory (V$DB_CACHE_ADVICE) ##
 COLUMN size_for_estimate FORMAT 99,990 HEADING 'Cache Size (MB)'
 COLUMN size_factor       FORMAT 990.90 HEADING 'Size Factor'
 COLUMN estd_physical_reads FORMAT 9,999,999,999,990 HEADING 'Estimated Phys Reads'
@@ -432,16 +365,13 @@ SELECT
     size_factor,
     estd_physical_reads,
     estd_phys_read_factor
-FROM dba_hist_db_cache_advice
-WHERE snap_id = &end_snap_id
-  AND dbid = &v_dbid
-  AND instance_number = &v_instance_number
-  AND advice_status = 'ON'
+FROM v$db_cache_advice
+WHERE advice_status = 'ON'
   AND block_size = (SELECT value FROM v$parameter WHERE name = 'db_block_size') -- Show for default block size
 ORDER BY size_for_estimate;
 
 PROMPT
-PROMPT ## SGA Target Advisory (DBA_HIST_SGA_TARGET_ADVICE) ##
+PROMPT ## SGA Target Advisory (V$SGA_TARGET_ADVICE) ##
 COLUMN sga_size          FORMAT 99,990 HEADING 'SGA Size (MB)'
 COLUMN sga_size_factor   FORMAT 990.90 HEADING 'SGA Size Factor'
 COLUMN estd_db_time      FORMAT 999,999,999,990 HEADING 'Estimated DB Time'
@@ -451,15 +381,12 @@ SELECT
     sga_size_factor,
     estd_db_time,
     estd_db_time_factor
-FROM dba_hist_sga_target_advice
-WHERE snap_id = &end_snap_id
-  AND dbid = &v_dbid
-  AND instance_number = &v_instance_number
-  AND advice_status = 'ON'
+FROM v$sga_target_advice
+WHERE advice_status = 'ON'
 ORDER BY sga_size;
 
 PROMPT
-PROMPT ## PGA Aggregate Target Advisory (DBA_HIST_PGA_TARGET_ADVICE) ##
+PROMPT ## PGA Aggregate Target Advisory (V$PGA_TARGET_ADVICE) ##
 COLUMN pga_target_for_estimate FORMAT 9,999,990 HEADING 'PGA Target (MB)'
 COLUMN pga_target_factor       FORMAT 990.90 HEADING 'PGA Target Factor'
 COLUMN advice_status           FORMAT A5 HEADING 'Status'
@@ -475,22 +402,19 @@ SELECT
     estd_extra_bytes_rw,
     estd_pga_cache_hit_percentage,
     estd_overalloc_count
-FROM dba_hist_pga_target_advice
-WHERE snap_id = &end_snap_id
-  AND dbid = &v_dbid
-  AND instance_number = &v_instance_number
+FROM v$pga_target_advice
 ORDER BY pga_target_for_estimate;
 
 PROMPT
 
 -- #############################################################################
--- # Section 7: Hot Objects (Based on Historical ASH)
+-- # Section 7: Hot Objects
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 7. HOT OBJECTS (Based on DBA_HIST_ACTIVE_SESS_HISTORY)
+PROMPT # 7. HOT OBJECTS (Based on V$ACTIVE_SESSION_HISTORY)
 PROMPT #############################################################################
 PROMPT Top 20 Objects by sampled activity time.
-PROMPT Snapshot Range: &begin_snap_id to &end_snap_id
+PROMPT Time Range: &begin_time to &end_time
 
 COLUMN owner          FORMAT A20 HEADING 'Owner'
 COLUMN object_name    FORMAT A30 HEADING 'Object Name'
@@ -501,46 +425,40 @@ COLUMN pct_activity   FORMAT 990.99 HEADING '% Total|Activity'
 WITH object_activity AS (
     SELECT
         ash.current_obj#,
-        SUM(CASE WHEN ash.session_state = 'ON CPU' THEN 1000000 -- Approximate 1 sec in microsecs if no time_waited for CPU
-                 WHEN ash.session_state = 'WAITING' THEN ash.time_waited
-                 ELSE 0
-            END) / 1000000 as activity_time_secs -- time_waited is microseconds
-    FROM dba_hist_active_sess_history ash
-    WHERE ash.snap_id > &begin_snap_id AND ash.snap_id <= &end_snap_id
-      AND ash.dbid = &v_dbid
-      AND ash.instance_number = &v_instance_number
-      AND ash.current_obj# IS NOT NULL AND ash.current_obj# > 0
+        COUNT(*) as activity_count
+    FROM v$active_session_history ash
+    WHERE ash.sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
+      AND ash.current_obj# IS NOT NULL AND ash.current_obj# > 0 -- Valid object reference
       AND (ash.session_state = 'ON CPU' OR (ash.session_state = 'WAITING' AND ash.wait_class <> 'Idle'))
     GROUP BY ash.current_obj#
 ),
 total_activity AS (
-    SELECT SUM(activity_time_secs) as total_secs FROM object_activity
+    SELECT SUM(activity_count) as total_samples FROM object_activity
 )
 SELECT * FROM (
     SELECT
         o.owner,
         o.object_name,
         o.object_type,
-        oa.activity_time_secs AS activity_secs,
-        (oa.activity_time_secs / GREATEST(1, (SELECT total_secs FROM total_activity))) * 100 AS pct_activity
+        oa.activity_count AS activity_secs,
+        (oa.activity_count / GREATEST(1, (SELECT total_samples FROM total_activity))) * 100 AS pct_activity
     FROM object_activity oa
-    JOIN dba_objects o ON oa.current_obj# = o.object_id -- Use current object name
+    JOIN dba_objects o ON oa.current_obj# = o.object_id -- Use DBA_OBJECTS if available
     ORDER BY activity_secs DESC
 ) WHERE ROWNUM <= 20;
-
 
 PROMPT
 
 -- #############################################################################
--- # Section 8: Replication Wait Events (Hints from Historical ASH)
+-- # Section 8: Replication Wait Events (GoldenGate / Data Guard Hints)
 -- #############################################################################
 PROMPT #############################################################################
-PROMPT # 8. REPLICATION WAIT EVENTS (Hints from DBA_HIST_ACTIVE_SESS_HISTORY)
+PROMPT # 8. REPLICATION WAIT EVENTS (Hints from V$ACTIVE_SESSION_HISTORY)
 PROMPT #############################################################################
 PROMPT Note: Identifying specific replication waits can be complex. Look for
 PROMPT waits associated with known replication process names (PROGRAM column)
 PROMPT or common replication-related wait events.
-PROMPT Snapshot Range: &begin_snap_id to &end_snap_id
+PROMPT Time Range: &begin_time to &end_time
 
 PROMPT
 PROMPT ## Top 10 Wait Events for Potential Data Guard/GoldenGate Processes ##
@@ -553,35 +471,27 @@ COLUMN total_wait_sec FORMAT 999,999,990 HEADING 'Total Wait|Seconds'
 SELECT * FROM (
     SELECT
         SUBSTR(program, 1, 30) as program,
-        event_name as event,
+        event,
         wait_class,
-        SUM(time_waited) / 1000000 as total_wait_sec
-    FROM dba_hist_active_sess_history
-    WHERE snap_id > &begin_snap_id AND snap_id <= &end_snap_id
-      AND dbid = &v_dbid
-      AND instance_number = &v_instance_number
+        COUNT(*) as total_wait_sec
+    FROM v$active_session_history
+    WHERE sample_time BETWEEN TO_DATE('&begin_time', 'YYYY-MM-DD HH24:MI:SS') AND TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS')
       AND session_state = 'WAITING'
-      AND wait_class IN ('Network', 'Commit', 'Configuration', 'System I/O')
+      AND wait_class IN ('Network', 'Commit', 'Configuration', 'System I/O') -- Classes often relevant to replication
       -- Add specific program filters if known, e.g.:
       -- AND (program LIKE '%RFS%' OR program LIKE '%MRP%' OR program LIKE '%LSP%' -- Data Guard examples
       --      OR program LIKE 'gg%' OR program LIKE '%replicat%' OR program LIKE '%extract%') -- GoldenGate examples
-    GROUP BY SUBSTR(program, 1, 30), event_name, wait_class
-    HAVING SUM(time_waited) > 0
+    GROUP BY SUBSTR(program, 1, 30), event, wait_class
     ORDER BY total_wait_sec DESC
 ) WHERE ROWNUM <= 10;
 
 PROMPT
-PROMPT ## Data Guard Lag Stats (DBA_HIST_DATAGUARD_STATS @ end snap) ##
+PROMPT ## Data Guard Current Lag Stats (if applicable, V$DATAGUARD_STATS) ##
 COLUMN name  FORMAT A25 HEADING 'Metric'
 COLUMN value FORMAT A20 HEADING 'Value'
 COLUMN unit  FORMAT A30 HEADING 'Unit'
 COLUMN time_computed FORMAT A20 HEADING 'Time Computed'
-SELECT name, value, unit, TO_CHAR(time_computed, 'YYYY-MM-DD HH24:MI:SS') as time_computed
-FROM dba_hist_dataguard_stats
-WHERE snap_id = &end_snap_id
-  AND dbid = &v_dbid
-  AND instance_number = &v_instance_number
-  AND name LIKE '%lag%';
+SELECT name, value, unit, time_computed FROM v$dataguard_stats WHERE name LIKE '%lag%';
 
 PROMPT
 
@@ -606,13 +516,8 @@ SET VERIFY ON
 SET HEADING ON
 SET LINESIZE 80
 SET PAGESIZE 14
-UNDEFINE begin_snap_id
-UNDEFINE end_snap_id
-UNDEFINE v_dbid
-UNDEFINE v_instance_number
-UNDEFINE v_begin_snap_time
-UNDEFINE v_end_snap_time
-UNDEFINE v_snap_duration_secs
+UNDEFINE begin_time
+UNDEFINE end_time
 UNDEFINE report_filename
 
 -- END OF SCRIPT
