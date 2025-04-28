@@ -1,5 +1,3 @@
-SQL for generating AWR like report on AWS oracle read replica.
-
 -- AWR-like Report Generation Script (Expanded)
 
 -- Specify the database identifier
@@ -8,27 +6,10 @@ DEFINE db_id = (SELECT DBID FROM V$DATABASE);
 -- Specify the instance number
 DEFINE inst_id = (SELECT INSTANCE_NUMBER FROM V$INSTANCE);
 
--- Specify the start and end snap IDs OR timestamps
--- Option 1: By Snap ID
---  DEFINE start_snap = &start_snap_id;
---  DEFINE end_snap = &end_snap_id;
+-- Specify the start and end snap IDs
+DEFINE start_snap = &start_snap_id;
+DEFINE end_snap = &end_snap_id;
 
--- Option 2: By Timestamp
-DEFINE start_time = TO_DATE('&start_time', 'YYYY-MM-DD HH24:MI:SS');
-DEFINE end_time = TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS');
-
--- Determine the WHERE clause based on snap IDs or timestamps
-COLUMN snap_where_clause NEW_VALUE snap_where_clause
-SELECT
-    CASE
-        WHEN '&start_snap' IS NOT NULL AND '&end_snap' IS NOT NULL THEN
-            'AND s.snap_id BETWEEN &start_snap AND &end_snap'
-        WHEN '&start_time' IS NOT NULL AND '&end_time' IS NOT NULL THEN
-            'AND s.begin_interval_time >= TO_DATE(''' || '&start_time' || ''', ''YYYY-MM-DD HH24:MI:SS'') AND s.end_interval_time <= TO_DATE(''' || '&end_time' || ''', ''YYYY-MM-DD HH24:MI:SS'')'
-        ELSE
-            '-- Please provide either snap IDs or a time range.'
-    END AS snap_where_clause
-FROM dual;
 
 -- Database Information
 PROMPT =================================================================================
@@ -102,9 +83,9 @@ WHERE
     AND s.instance_number = &&inst_id
     AND n.dbid = s.dbid
     AND n.instance_number = s.instance_number
+    AND n.snap_id BETWEEN &start_snap AND &end_snap
     AND n.snap_id = s.snap_id
     AND n.stat_name IN ('physical reads direct', 'physical reads', 'physical writes direct', 'physical writes', 'redo size', 'logical reads', 'user commits', 'user rollbacks', 'CPU used by this session')
-    &&snap_where_clause
 GROUP BY
     s.snap_id, s.begin_interval_time, s.end_interval_time
 ORDER BY
@@ -135,6 +116,7 @@ FROM (
         AND s.instance_number = &&inst_id
         AND ash.dbid = s.dbid
         AND ash.instance_number = s.instance_number
+        AND ash.snap_id BETWEEN &start_snap AND &end_snap
         AND ash.snap_id = s.snap_id
         AND we.dbid = s.dbid
         AND we.instance_number = s.instance_number
@@ -142,7 +124,6 @@ FROM (
         AND ash.session_state = 'WAIT'
         AND ash.wait_class != 'Idle'
         AND ash.event = we.event_name
-        &&snap_where_clause
     GROUP BY
         s.snap_id, s.begin_interval_time, s.end_interval_time, we.event_name
 )
@@ -170,6 +151,7 @@ WHERE
     AND s.instance_number = &&inst_id
     AND bw.dbid = s.dbid
     AND bw.instance_number = s.instance_number
+    AND bw.snap_id BETWEEN &start_snap AND &end_snap
     AND bw.snap_id = s.snap_id
     &&snap_where_clause
 ORDER BY
@@ -204,6 +186,7 @@ FROM (
         AND s.instance_number = &&inst_id
         AND h.dbid = s.dbid
         AND h.instance_number = s.instance_number
+        AND h.snap_id BETWEEN &start_snap AND &end_snap
         AND h.snap_id = s.snap_id
         AND h.disk_reads_delta > 0
         &&snap_where_clause
@@ -240,6 +223,7 @@ FROM (
         AND s.instance_number = &&inst_id
         AND h.dbid = s.dbid
         AND h.instance_number = s.instance_number
+        AND h.snap_id BETWEEN &start_snap AND &end_snap
         AND h.snap_id = s.snap_id
         AND h.cpu_time_delta > 0
         &&snap_where_clause
@@ -275,6 +259,7 @@ FROM (
         AND s.instance_number = &&inst_id
         AND h.dbid = s.dbid
         AND h.instance_number = s.instance_number
+        AND h.snap_id BETWEEN &start_snap AND &end_snap
         AND h.snap_id = s.snap_id
         AND h.buffer_gets_delta > 0
         &&snap_where_clause
@@ -310,6 +295,7 @@ FROM (
         AND s.instance_number = &&inst_id
         AND h.dbid = s.dbid
         AND h.instance_number = s.instance_number
+        AND h.snap_id BETWEEN &start_snap AND &end_snap
         AND h.snap_id = s.snap_id
         AND h.elapsed_time_delta > 0
         &&snap_where_clause
@@ -342,6 +328,7 @@ FROM (
       AND s.instance_number = &&inst_id
       AND lh.dbid = s.dbid
       AND lh.instance_number = s.instance_number
+      AND lh.snap_id BETWEEN &start_snap AND &end_snap
       AND lh.snap_id = s.snap_id
       &&snap_where_clause
   GROUP BY
@@ -376,6 +363,7 @@ WHERE
     AND s.instance_number = &&inst_id
     AND r.dbid = s.dbid
     AND r.instance_number = s.instance_number
+    AND r.snap_id BETWEEN &start_snap AND &end_snap
     AND r.snap_id = s.snap_id
     &&snap_where_clause
 GROUP BY
@@ -402,6 +390,7 @@ WHERE
     AND s.instance_number = &&inst_id
     AND b.dbid = s.dbid
     AND b.instance_number = s.instance_number
+    AND b.snap_id BETWEEN &start_snap AND &end_snap
     AND b.snap_id = s.snap_id
     AND b.cache_id = 0  --  For DEFAULT buffer pool
     &&snap_where_clause
@@ -427,7 +416,8 @@ WHERE
     AND s.instance_number = &&inst_id
     AND sga.dbid = s.dbid
     AND sga.instance_number = s.instance_number
-    AND sga.snap_id = s.snap_id
+    AND s.snap_id BETWEEN &start_snap AND &end_snap
+    AND s.snap_id = s.snap_id
     &&snap_where_clause
 ORDER BY
     s.snap_id, sga.sga_size;
@@ -451,6 +441,7 @@ WHERE
     AND s.instance_number = &&inst_id
     AND pga.dbid = s.dbid
     AND pga.instance_number = s.instance_number
+    AND pga.snap_id BETWEEN &start_snap AND &end_snap
     AND pga.snap_id = s.snap_id
     &&snap_where_clause
 ORDER BY
@@ -489,8 +480,8 @@ FROM (
         AND s.instance_number = &&inst_id
         AND ts.dbid = s.dbid
         AND ts.instance_number = s.instance_number
+        AND ts.snap_id BETWEEN &start_snap AND &end_snap
         AND ts.snap_id = s.snap_id
-        AND ts.obj# = d.object_id
         AND ts.statistic_name = 'logical reads'
         &&snap_where_clause
     GROUP BY
