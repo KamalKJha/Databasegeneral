@@ -1,0 +1,500 @@
+SQL for generating AWR like report on AWS oracle read replica.
+
+-- AWR-like Report Generation Script (Expanded)
+
+-- Specify the database identifier
+DEFINE db_id = (SELECT DBID FROM V$DATABASE);
+
+-- Specify the instance number
+DEFINE inst_id = (SELECT INSTANCE_NUMBER FROM V$INSTANCE);
+
+-- Specify the start and end snap IDs OR timestamps
+-- Option 1: By Snap ID
+--  DEFINE start_snap = &start_snap_id;
+--  DEFINE end_snap = &end_snap_id;
+
+-- Option 2: By Timestamp
+DEFINE start_time = TO_DATE('&start_time', 'YYYY-MM-DD HH24:MI:SS');
+DEFINE end_time = TO_DATE('&end_time', 'YYYY-MM-DD HH24:MI:SS');
+
+-- Determine the WHERE clause based on snap IDs or timestamps
+COLUMN snap_where_clause NEW_VALUE snap_where_clause
+SELECT
+    CASE
+        WHEN '&start_snap' IS NOT NULL AND '&end_snap' IS NOT NULL THEN
+            'AND s.snap_id BETWEEN &start_snap AND &end_snap'
+        WHEN '&start_time' IS NOT NULL AND '&end_time' IS NOT NULL THEN
+            'AND s.begin_interval_time >= TO_DATE(''' || '&start_time' || ''', ''YYYY-MM-DD HH24:MI:SS'') AND s.end_interval_time <= TO_DATE(''' || '&end_time' || ''', ''YYYY-MM-DD HH24:MI:SS'')'
+        ELSE
+            '-- Please provide either snap IDs or a time range.'
+    END AS snap_where_clause
+FROM dual;
+
+-- Database Information
+PROMPT =================================================================================
+PROMPT Database Information
+PROMPT =================================================================================
+SELECT
+    db.DBID AS database_id,
+    db.NAME AS database_name,
+    i.INSTANCE_NAME,
+    i.HOST_NAME,
+    v.VERSION AS oracle_version,
+    s.STARTUP_TIME,
+    db.CREATED AS database_creation_time,
+    i.STARTUP_TIME AS instance_startup_time
+FROM
+    V$DATABASE db,
+    V$INSTANCE i,
+    V$VERSION v,
+    V$SYSTEM_TIME s
+WHERE ROWNUM = 1;
+
+-- Load Profile
+PROMPT =================================================================================
+PROMPT Load Profile
+PROMPT =================================================================================
+SELECT
+    s.snap_id,
+    s.begin_interval_time,
+    s.end_interval_time,
+    ROUND((SUM(CASE WHEN n.stat_name = 'physical reads direct' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'physical reads direct' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS direct_reads_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'physical reads' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'physical reads' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS disk_reads_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'physical writes direct' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'physical writes direct' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS direct_writes_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'physical writes' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'physical writes' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS disk_writes_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'redo size' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'redo size' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS redo_size_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'logical reads' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'logical reads' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS logical_reads_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'user commits' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'user commits' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS commits_per_sec,
+    ROUND((SUM(CASE WHEN n.stat_name = 'user rollbacks' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'user rollbacks' then n.value end), 1, 0) over (order by s.snap_id)) /
+          ((s.end_interval_time - lag(s.end_interval_time, 1, s.begin_interval_time) over (order by s.snap_id)) * 24 * 60 * 60), 2) as rollbacks_per_sec,
+    (
+      round((sum(case when n.stat_name = 'physical reads' then n.value end) -
+             lag(sum(case when n.stat_name = 'physical reads' then n.value end), 1, 0) over (order by s.snap_id)) /
+            ((s.end_interval_time - lag(s.end_interval_time, 1, s.begin_interval_time) over (order by s.snap_id)) * 24 * 60 * 60), 2)
+      +
+      round((sum(case when n.stat_name = 'physical writes' then n.value end) -
+             lag(sum(case when n.stat_name = 'physical writes' then n.value end), 1, 0) over (order by s.snap_id)) /
+            ((s.end_interval_time - lag(s.end_interval_time, 1, s.begin_interval_time) over (order by s.snap_id)) * 24 * 60 * 60), 2)
+    ) AS IOPS,
+    ROUND((SUM(CASE WHEN n.stat_name = 'CPU used by this session' THEN n.value END) -
+           LAG(SUM(CASE WHEN n.stat_name = 'CPU used by this session' THEN n.value END), 1, 0) OVER (ORDER BY s.snap_id)) /
+          ((s.end_interval_time - LAG(s.end_interval_time, 1, s.begin_interval_time) OVER (ORDER BY s.snap_id)) * 24 * 60 * 60), 2) AS cpu_usage_seconds_per_sec
+FROM
+    DBA_HIST_SNAPSHOT s,
+    DBA_HIST_SYSSTAT n
+WHERE
+    s.dbid = &&db_id
+    AND s.instance_number = &&inst_id
+    AND n.dbid = s.dbid
+    AND n.instance_number = s.instance_number
+    AND n.snap_id = s.snap_id
+    AND n.stat_name IN ('physical reads direct', 'physical reads', 'physical writes direct', 'physical writes', 'redo size', 'logical reads', 'user commits', 'user rollbacks', 'CPU used by this session')
+    &&snap_where_clause
+GROUP BY
+    s.snap_id, s.begin_interval_time, s.end_interval_time
+ORDER BY
+    s.snap_id;
+
+-- Top Foreground Wait Events
+PROMPT =================================================================================
+PROMPT Top Foreground Wait Events
+PROMPT =================================================================================
+SELECT *
+FROM (
+    SELECT
+        s.snap_id,
+        s.begin_interval_time,
+        s.end_interval_time,
+        we.event_name,
+        ROUND(SUM(time_waited_micro) / 1000000, 2) AS total_wait_seconds,
+        COUNT(*) AS total_waits,
+        SUM(we.time_waited_micro) AS total_wait_micro,
+        MAX(we.wait_class) AS wait_class,
+        ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(time_waited_micro) DESC) as rn
+    FROM
+        DBA_HIST_SNAPSHOT s,
+        DBA_HIST_ACTIVE_SESS_HISTORY ash,
+        DBA_HIST_WAITSTAT we
+    WHERE
+        s.dbid = &&db_id
+        AND s.instance_number = &&inst_id
+        AND ash.dbid = s.dbid
+        AND ash.instance_number = s.instance_number
+        AND ash.snap_id = s.snap_id
+        AND we.dbid = s.dbid
+        AND we.instance_number = s.instance_number
+        AND we.snap_id = s.snap_id
+        AND ash.session_state = 'WAIT'
+        AND ash.wait_class != 'Idle'
+        AND ash.event = we.event_name
+        &&snap_where_clause
+    GROUP BY
+        s.snap_id, s.begin_interval_time, s.end_interval_time, we.event_name
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_wait_seconds DESC;
+
+-- Top Background Wait Events
+PROMPT =================================================================================
+PROMPT Top Background Wait Events
+PROMPT =================================================================================
+SELECT
+    s.snap_id,
+    s.begin_interval_time,
+    s.end_interval_time,
+    bw.event,
+    ROUND((bw.time_waited_total - LAG(bw.time_waited_total, 1, 0) OVER (PARTITION BY bw.event ORDER BY s.snap_id)) / 1000000, 2) AS delta_wait_seconds,
+    (bw.total_waits - LAG(bw.total_waits, 1, 0) OVER (PARTITION BY bw.event ORDER BY s.snap_id)) AS delta_waits,
+    bw.time_waited_total,
+    bw.total_waits
+FROM
+    DBA_HIST_SNAPSHOT s,
+    DBA_HIST_BG_EVENT_SUMMARY bw
+WHERE
+    s.dbid = &&db_id
+    AND s.instance_number = &&inst_id
+    AND bw.dbid = s.dbid
+    AND bw.instance_number = s.instance_number
+    AND bw.snap_id = s.snap_id
+    &&snap_where_clause
+ORDER BY
+    delta_wait_seconds DESC
+FETCH FIRST 10 ROWS ONLY;
+
+-- Top SQL Ordered by Reads
+PROMPT =================================================================================
+PROMPT Top SQL Ordered by Reads
+PROMPT =================================================================================
+SELECT *
+FROM (
+    SELECT
+        s.snap_id,
+        s.begin_interval_time,
+        s.end_interval_time,
+        h.sql_id,
+        COUNT(DISTINCT h.plan_hash_value) AS num_plans,
+        MAX(h.parsing_schema_name) AS parsing_schema_name,
+        SUM(h.disk_reads_delta) AS total_disk_reads,
+        SUM(h.buffer_gets_delta) AS total_buffer_gets,
+        SUM(h.executions_delta) AS total_executions,
+        ROUND(SUM(h.elapsed_time_delta) / 1000000, 2) AS total_elapsed_seconds,
+        ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(h.disk_reads_delta) DESC) as rn,
+        SUM(h.cpu_time_delta) AS total_cpu_time_micro,
+        SUM(h.iowait_delta) as total_io_wait_micro
+    FROM
+        DBA_HIST_SNAPSHOT s,
+        DBA_HIST_SQLSTAT h
+    WHERE
+        s.dbid = &&db_id
+        AND s.instance_number = &&inst_id
+        AND h.dbid = s.dbid
+        AND h.instance_number = s.instance_number
+        AND h.snap_id = s.snap_id
+        AND h.disk_reads_delta > 0
+        &&snap_where_clause
+    GROUP BY
+        s.snap_id, s.begin_interval_time, s.end_interval_time, h.sql_id
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_disk_reads DESC;
+
+-- Top SQL Ordered by CPU
+PROMPT =================================================================================
+PROMPT Top SQL Ordered by CPU
+PROMPT =================================================================================
+SELECT *
+FROM (
+    SELECT
+        s.snap_id,
+        s.begin_interval_time,
+        s.end_interval_time,
+        h.sql_id,
+        COUNT(DISTINCT h.plan_hash_value) AS num_plans,
+        MAX(h.parsing_schema_name) AS parsing_schema_name,
+        ROUND(SUM(h.cpu_time_delta) / 1000000, 2) AS total_cpu_seconds,
+        SUM(h.executions_delta) AS total_executions,
+        ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(h.cpu_time_delta) DESC) as rn,
+        SUM(h.disk_reads_delta) AS total_disk_reads,
+        SUM(h.buffer_gets_delta) AS total_buffer_gets,
+        ROUND(SUM(h.elapsed_time_delta)/1000000,2) as total_elapsed_seconds
+    FROM
+        DBA_HIST_SNAPSHOT s,
+        DBA_HIST_SQLSTAT h
+    WHERE
+        s.dbid = &&db_id
+        AND s.instance_number = &&inst_id
+        AND h.dbid = s.dbid
+        AND h.instance_number = s.instance_number
+        AND h.snap_id = s.snap_id
+        AND h.cpu_time_delta > 0
+        &&snap_where_clause
+    GROUP BY
+        s.snap_id, s.begin_interval_time, s.end_interval_time, h.sql_id
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_cpu_seconds DESC;
+
+-- Top SQL Ordered by Gets (Buffer Gets)
+PROMPT =================================================================================
+PROMPT Top SQL Ordered by Gets (Buffer Gets)
+PROMPT =================================================================================
+SELECT *
+FROM (
+    SELECT
+        s.snap_id,
+        s.begin_interval_time,
+        s.end_interval_time,
+        h.sql_id,
+        COUNT(DISTINCT h.plan_hash_value) AS num_plans,
+        MAX(h.parsing_schema_name) AS parsing_schema_name,
+        SUM(h.buffer_gets_delta) AS total_buffer_gets,
+        SUM(h.executions_delta) AS total_executions,
+        ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(h.buffer_gets_delta) DESC) as rn,
+        SUM(h.disk_reads_delta) AS total_disk_reads,
+        ROUND(SUM(h.elapsed_time_delta)/1000000,2) as total_elapsed_seconds
+    FROM
+        DBA_HIST_SNAPSHOT s,
+        DBA_HIST_SQLSTAT h
+    WHERE
+        s.dbid = &&db_id
+        AND s.instance_number = &&inst_id
+        AND h.dbid = s.dbid
+        AND h.instance_number = s.instance_number
+        AND h.snap_id = s.snap_id
+        AND h.buffer_gets_delta > 0
+        &&snap_where_clause
+    GROUP BY
+        s.snap_id, s.begin_interval_time, s.end_interval_time, h.sql_id
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_buffer_gets DESC;
+
+-- Top SQL Ordered by Execution Time
+PROMPT =================================================================================
+PROMPT Top SQL Ordered by Execution Time
+PROMPT =================================================================================
+SELECT *
+FROM (
+    SELECT
+        s.snap_id,
+        s.begin_interval_time,
+        s.end_interval_time,
+        h.sql_id,
+        COUNT(DISTINCT h.plan_hash_value) AS num_plans,
+        MAX(h.parsing_schema_name) AS parsing_schema_name,
+        ROUND(SUM(h.elapsed_time_delta) / 1000000, 2) AS total_elapsed_seconds,
+        SUM(h.executions_delta) AS total_executions,
+        ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(h.elapsed_time_delta) DESC) as rn,
+        SUM(h.cpu_time_delta) AS total_cpu_time_micro,
+        SUM(h.disk_reads_delta) AS total_disk_reads
+    FROM
+        DBA_HIST_SNAPSHOT s,
+        DBA_HIST_SQLSTAT h
+    WHERE
+        s.dbid = &&db_id
+        AND s.instance_number = &&inst_id
+        AND h.dbid = s.dbid
+        AND h.instance_number = s.instance_number
+        AND h.snap_id = s.snap_id
+        AND h.elapsed_time_delta > 0
+        &&snap_where_clause
+    GROUP BY
+        s.snap_id, s.begin_interval_time, s.end_interval_time, h.sql_id
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_elapsed_seconds DESC;
+
+-- Top Latch Waits
+PROMPT =================================================================================
+PROMPT Top Latch Waits
+PROMPT =================================================================================
+SELECT *
+FROM (
+  SELECT
+      s.snap_id,
+      s.begin_interval_time,
+      s.end_interval_time,
+      lh.latch_name,
+      SUM(lh.wait_count) AS total_waits,
+      ROUND(SUM(lh.time_waited_micros) / 1000000, 2) AS total_wait_seconds,
+      ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(lh.time_waited_micros) DESC) as rn,
+      MAX(lh.level#) as latch_level
+  FROM
+      DBA_HIST_SNAPSHOT s,
+      DBA_HIST_LATCH lh
+  WHERE
+      s.dbid = &&db_id
+      AND s.instance_number = &&inst_id
+      AND lh.dbid = s.dbid
+      AND lh.instance_number = s.instance_number
+      AND lh.snap_id = s.snap_id
+      &&snap_where_clause
+  GROUP BY
+      s.snap_id, s.begin_interval_time, s.end_interval_time, lh.latch_name
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_wait_seconds DESC;
+
+-- Replication Statistics
+PROMPT =================================================================================
+PROMPT Replication Statistics
+PROMPT =================================================================================
+SELECT
+    s.snap_id,
+    s.begin_interval_time,
+    s.end_interval_time,
+    r.source_database,
+    r.destination_database,
+    r.logminer_id,
+    r.capture_name,
+    r.apply_name,
+    r.queue_name,
+    ROUND(AVG(r.time_queued), 2) AS average_time_queued,
+    ROUND(AVG(r.time_applied), 2) AS average_time_applied,
+    MAX(r.messages_queued) AS max_messages_queued,
+    MAX(r.messages_applied) AS max_messages_applied
+FROM
+    DBA_HIST_SNAPSHOT s,
+    DBA_HIST_REPL_APPLY r
+WHERE
+    s.dbid = &&db_id
+    AND s.instance_number = &&inst_id
+    AND r.dbid = s.dbid
+    AND r.instance_number = s.instance_number
+    AND r.snap_id = s.snap_id
+    &&snap_where_clause
+GROUP BY
+    s.snap_id, s.begin_interval_time, s.end_interval_time, r.source_database, r.destination_database, r.logminer_id, r.capture_name, r.apply_name, r.queue_name
+ORDER BY
+    s.snap_id;
+
+-- Buffer Cache Advisory
+PROMPT =================================================================================
+PROMPT Buffer Cache Advisory
+PROMPT =================================================================================
+SELECT
+    s.snap_id,
+    s.begin_interval_time,
+    s.end_interval_time,
+    b.size_for_estimate,
+    b.estd_physical_read_factor,
+    b.estd_physical_reads
+FROM
+    DBA_HIST_SNAPSHOT s,
+    DBA_HIST_CACHE_ADVICE b
+WHERE
+    s.dbid = &&db_id
+    AND s.instance_number = &&inst_id
+    AND b.dbid = s.dbid
+    AND b.instance_number = s.instance_number
+    AND b.snap_id = s.snap_id
+    AND b.cache_id = 0  --  For DEFAULT buffer pool
+    &&snap_where_clause
+ORDER BY
+    s.snap_id, b.size_for_estimate;
+
+-- SGA Advisory
+PROMPT =================================================================================
+PROMPT SGA Advisory
+PROMPT =================================================================================
+SELECT
+    s.snap_id,
+    s.begin_interval_time,
+    s.end_interval_time,
+    sga.sga_size,
+    sga.estd_db_time_factor,
+    sga.estd_db_time
+FROM
+    DBA_HIST_SNAPSHOT s,
+    DBA_HIST_SGA_TARGET_ADVICE sga
+WHERE
+    s.dbid = &&db_id
+    AND s.instance_number = &&inst_id
+    AND sga.dbid = s.dbid
+    AND sga.instance_number = s.instance_number
+    AND sga.snap_id = s.snap_id
+    &&snap_where_clause
+ORDER BY
+    s.snap_id, sga.sga_size;
+
+-- PGA Target Advisory
+PROMPT =================================================================================
+PROMPT PGA Target Advisory
+PROMPT =================================================================================
+SELECT
+    s.snap_id,
+    s.begin_interval_time,
+    s.end_interval_time,
+    pga.pga_target_for_estimate,
+    pga.estd_pga_cache_hit_ratio,
+    pga.estd_overalloc_count
+FROM
+    DBA_HIST_SNAPSHOT s,
+    DBA_HIST_PGA_TARGET_ADVICE pga
+WHERE
+    s.dbid = &&db_id
+    AND s.instance_number = &&inst_id
+    AND pga.dbid = s.dbid
+    AND pga.instance_number = s.instance_number
+    AND pga.snap_id = s.snap_id
+    &&snap_where_clause
+ORDER BY
+    s.snap_id, pga.pga_target_for_estimate;
+
+-- Hot Objects (Tables and Indexes) by Reads
+PROMPT =================================================================================
+PROMPT Hot Objects (Tables and Indexes) by Reads
+PROMPT =================================================================================
+SELECT *
+FROM (
+    SELECT
+        s.snap_id,
+        s.begin_interval_time,
+        s.end_interval_time,
+        d.owner,
+        d.object_name,
+        d.subobject_name,
+        d.object_type,
+        SUM(ts.value) AS total_logical_reads,
+        ROW_NUMBER() OVER (PARTITION BY s.snap_id ORDER BY SUM(ts.value) DESC) as rn,
+        MAX(d.last_ddl_time) as last_ddl_time,
+        d.created as object_creation_time,
+        SUM(ts.PHYSICAL_READS_TOTAL) as total_physical_reads,
+        SUM(ts.PHYSICAL_READS_DIRECT_TOTAL) as total_direct_physical_reads,
+        SUM(ts.PHYSICAL_WRITES_TOTAL) as total_physical_writes,
+        SUM(ts.TABLE_SCANS_TOTAL) as total_table_scans,
+        SUM(ts.ROW_LOCK_WAITS_TOTAL) as total_row_lock_waits,
+        SUM(ts.BUFFER_BUSY_WAITS_TOTAL) as total_buffer_busy_waits
+    FROM
+        DBA_HIST_SNAPSHOT s,
+        DBA_HIST_SEG_STAT_OBJ ts,
+        DBA_OBJECTS d
+    WHERE
+        s.dbid = &&db_id
+        AND s.instance_number = &&inst_id
+        AND ts.dbid = s.dbid
+        AND ts.instance_number = s.instance_number
+        AND ts.snap_id = s.snap_id
+        AND ts.obj# = d.object_id
+        AND ts.statistic_name = 'logical reads'
+        &&snap_where_clause
+    GROUP BY
+        s.snap_id, s.begin_interval_time, s.end_interval_time, d.owner, d.object_name, d.subobject_name, d.object_type, d.created
+)
+WHERE rn <= 10
+ORDER BY snap_id, total_logical_reads DESC;
