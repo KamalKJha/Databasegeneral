@@ -2,7 +2,7 @@
 -- # Script Name: rds_perf_report.sql
 -- # Description: Generates an AWR-like performance report using V$ views
 -- #              Suitable for Oracle RDS Read Replicas.
--- # Author:      AI Assistant
+-- # Author:      Kamal Jha
 -- # Version:     1.0
 -- # Usage:       Run in SQL*Plus or SQLcl. Provides prompts for time window.
 -- # Requires:    Access to V$ views, particularly V$ACTIVE_SESSION_HISTORY.
