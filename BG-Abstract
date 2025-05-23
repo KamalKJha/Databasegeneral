@@ -1,0 +1,15 @@
+Abstract: Achieving True Zero-Downtime for AWS RDBMS with Advanced Blue/Green Deployments and Oracle GoldenGate: Beyond Native Aurora Limitations
+
+In today's always-on digital landscape, achieving true zero-downtime for critical applications is paramount. While cloud providers offer various tools for high availability, the complexities of database patching, upgrades, and application deployments often introduce service interruptions.
+This abstract presents a comprehensive strategy for implementing a robust blue-green deployment methodology specifically tailored for AWS Relational Database Management Systems (RDBMS), leveraging the power of Oracle GoldenGate to minimize downtime during updates and maximize system reliability and user satisfaction.
+
+
+Our approach addresses the inherent challenges of traditional deployment models by establishing independent Blue and Green environments, utilizing Oracle GoldenGate for real-time, bi-directional data replication and synchronization between the environments.
+This enables seamless application development, rigorous testing of patches and upgrades in a pre-production environment, and a controlled cutover to the new Green environment with minimal impact. 
+Crucially, GoldenGate's robust replication capabilities also facilitate rapid, reliable rollback to the stable Blue environment in the event of unforeseen issues, drastically reducing mean time to recovery (MTTR) and ensuring data integrity throughout the process.
+
+
+
+Furthermore, this session will highlight the limitations of native AWS Aurora's blue/green deployment options for comprehensive zero-downtime strategies. We will detail how a custom-built solution, incorporating Oracle GoldenGate's advanced change data capture (CDC) and replication features, alongside 
+robust testing protocols and automated rollback procedures, can provide a more mature and reliable framework than what is currently available out-of-the-box. 
+Attendees will learn actionable strategies for designing, implementing, and managing a blue-green deployment pipeline for AWS RDBMS using Oracle GoldenGate, ensuring high availability, enhancing system resilience, and ultimately elevating the user experience through uninterrupted service delivery.
