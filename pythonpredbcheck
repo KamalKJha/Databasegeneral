@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+
+import boto3
+import json
+import os
+import sys
+from datetime import datetime
+
+def extract_details(db):
+    return {
+        "AllocatedStorage": db['AllocatedStorage'],
+        "EngineVersion":    db['EngineVersion'],
+        "IOPS":             db.get('Iops', 0),
+        "MultiAZ":          db['MultiAZ'],
+        "ParameterGroup":   db['DBParameterGroups'][0]['DBParameterGroupName'],
+        "SubnetGroup":      db['DBSubnetGroup']['DBSubnetGroupName']
+    }
+
+def store_to_s3(data, bucket):
+    filename = f"rds_compare_{data['source_db']}_vs_{data['target_db']}_{datetime.utcnow().isoformat()}.json"
+    boto3.client('s3').put_object(Bucket=bucket, Key=filename, Body=json.dumps(data))
+
+def store_to_dynamo(data, table_name):
+    table = boto3.resource('dynamodb').Table(table_name)
+    data['id'] = f"{data['source_db']}_{data['target_db']}_{datetime.utcnow().isoformat()}"
+    table.put_item(Item=data)
+
+def send_sns_notification(data, topic_arn):
+    status     = data.get('status', 'UNKNOWN')
+    src, tgt   = data['source_db'], data['target_db']
+    comparison = data.get('comparison', {})
+    lines = [
+        f"{field}: {info['status']} (source={info['source']}, target={info['target']})"
+        for field, info in comparison.items()
+    ]
+    body = (
+        f"Comparison Result for {src} vs {tgt}:\n" +
+        "\n".join(lines) +
+        "\n\nFull payload:\n" +
+        json.dumps(data, indent=2)
+    )
+    boto3.client('sns').publish(TopicArn=topic_arn,
+                                Subject=f"RDS Comparison {status}: {src} vs {tgt}",
+                                Message=body)
+
+def main():
+    # load config from environment
+    SOURCE_DB     = os.environ['SOURCE_DB']
+    TARGET_DB     = os.environ['TARGET_DB']
+    SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+    STORE_TO      = os.environ.get('STORE_TO', 's3').lower()
+    S3_BUCKET     = os.environ.get('S3_BUCKET', '')
+    DYNAMO_TABLE  = os.environ.get('DYNAMO_TABLE', '')
+
+    rds = boto3.client('rds')
+
+    try:
+        src = rds.describe_db_instances(DBInstanceIdentifier=SOURCE_DB)['DBInstances'][0]
+        tgt = rds.describe_db_instances(DBInstanceIdentifier=TARGET_DB)['DBInstances'][0]
+
+        comparison = {}
+        for key in ["AllocatedStorage", "EngineVersion", "IOPS", "MultiAZ", "ParameterGroup", "SubnetGroup"]:
+            if key == "IOPS":
+                s_val = src.get('Iops', 0)
+                t_val = tgt.get('Iops', 0)
+            elif key == "ParameterGroup":
+                s_val = src['DBParameterGroups'][0]['DBParameterGroupName']
+                t_val = tgt['DBParameterGroups'][0]['DBParameterGroupName']
+            elif key == "SubnetGroup":
+                s_val = src['DBSubnetGroup']['DBSubnetGroupName']
+                t_val = tgt['DBSubnetGroup']['DBSubnetGroupName']
+            else:
+                s_val = src[key]
+                t_val = tgt[key]
+
+            comparison[key] = {
+                "source": s_val,
+                "target": t_val,
+                "status": "match" if s_val == t_val else "mismatch"
+            }
+
+        all_match = all(info["status"] == "match" for info in comparison.values())
+
+        result = {
+            "timestamp":      datetime.utcnow().isoformat(),
+            "source_db":      SOURCE_DB,
+            "target_db":      TARGET_DB,
+            "comparison":     comparison,
+            "source_details": extract_details(src),
+            "target_details": extract_details(tgt),
+            "status":         "SUCCESS" if all_match else "FAILURE"
+        }
+
+        if STORE_TO == 's3':
+            store_to_s3(result, S3_BUCKET)
+        else:
+            store_to_dynamo(result, DYNAMO_TABLE)
+
+        send_sns_notification(result, SNS_TOPIC_ARN)
+        sys.exit(0 if all_match else 1)
+
+    except Exception as e:
+        error_payload = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "status":    "ERROR",
+            "message":   str(e)
+        }
+        send_sns_notification(error_payload, SNS_TOPIC_ARN)
+        sys.exit(2)
+
+if __name__ == '__main__':
+    main()
