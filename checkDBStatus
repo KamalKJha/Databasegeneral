@@ -1,0 +1,104 @@
+import boto3
+import json
+import os
+from datetime import datetime
+
+# Environment variables
+SOURCE_DB = os.environ['SOURCE_DB']
+TARGET_DB = os.environ['TARGET_DB']
+SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+STORE_TO = os.environ.get('STORE_TO', 's3')  # 's3' or 'dynamodb'
+
+s3_bucket = os.environ.get('S3_BUCKET', '')
+dynamo_table = os.environ.get('DYNAMO_TABLE', '')
+
+rds = boto3.client('rds')
+sns = boto3.client('sns')
+s3 = boto3.client('s3')
+dynamodb = boto3.resource('dynamodb')
+
+
+def lambda_handler(event, context):
+    try:
+        source_db = rds.describe_db_instances(DBInstanceIdentifier=SOURCE_DB)['DBInstances'][0]
+        target_db = rds.describe_db_instances(DBInstanceIdentifier=TARGET_DB)['DBInstances'][0]
+
+        # Extract and compare key attributes
+        comparison = {
+            "AllocatedStorage": source_db['AllocatedStorage'] == target_db['AllocatedStorage'],
+            "EngineVersion": source_db['EngineVersion'] == target_db['EngineVersion'],
+            "IOPS": source_db.get('Iops', 0) == target_db.get('Iops', 0),
+            "MultiAZ": source_db['MultiAZ'] == target_db['MultiAZ'],
+            "ParameterGroup": source_db['DBParameterGroups'][0]['DBParameterGroupName'] == target_db['DBParameterGroups'][0]['DBParameterGroupName'],
+            "SubnetGroup": source_db['DBSubnetGroup']['DBSubnetGroupName'] == target_db['DBSubnetGroup']['DBSubnetGroupName']
+        }
+
+        all_match = all(comparison.values())
+
+        result = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "source_db": SOURCE_DB,
+            "target_db": TARGET_DB,
+            "comparison": comparison,
+            "source_details": extract_details(source_db),
+            "target_details": extract_details(target_db),
+            "status": "SUCCESS" if all_match else "FAILURE"
+        }
+
+        # Store result
+        if STORE_TO == 's3':
+            store_to_s3(result)
+        else:
+            store_to_dynamo(result)
+
+        # Notify via SNS
+        send_sns_notification(result)
+
+        return {
+            'statusCode': 200 if all_match else -1,
+            'body': json.dumps(result)
+        }
+
+    except Exception as e:
+        error_result = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "status": "ERROR",
+            "message": str(e)
+        }
+        send_sns_notification(error_result)
+        return {
+            'statusCode': -1,
+            'body': str(e)
+        }
+
+
+def extract_details(db):
+    return {
+        "AllocatedStorage": db['AllocatedStorage'],
+        "EngineVersion": db['EngineVersion'],
+        "IOPS": db.get('Iops', 0),
+        "MultiAZ": db['MultiAZ'],
+        "ParameterGroup": db['DBParameterGroups'][0]['DBParameterGroupName'],
+        "SubnetGroup": db['DBSubnetGroup']['DBSubnetGroupName']
+    }
+
+
+def store_to_s3(data):
+    filename = f"rds_compare_{SOURCE_DB}_vs_{TARGET_DB}_{datetime.utcnow().isoformat()}.json"
+    s3.put_object(Bucket=s3_bucket, Key=filename, Body=json.dumps(data))
+
+
+def store_to_dynamo(data):
+    table = dynamodb.Table(dynamo_table)
+    data['id'] = f"{SOURCE_DB}_{TARGET_DB}_{datetime.utcnow().isoformat()}"
+    table.put_item(Item=data)
+
+
+def send_sns_notification(data):
+    subject = f"RDS Comparison {data.get('status', 'UNKNOWN')}: {SOURCE_DB} vs {TARGET_DB}"
+    message = json.dumps(data, indent=2)
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject,
+        Message=message
+    )
