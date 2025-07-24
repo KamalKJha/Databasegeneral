@@ -1,0 +1,51 @@
+Slide 1: Title Slide
+Title: Achieving Zero-Downtime Database Operations at OmniBank Global
+
+Subtitle: A Proven Blue-Green Architecture for AWS RDBMS Powered by Advanced Logical Replication
+
+Presented by: OmniBank Global, Commercial Card Domain
+
+Core Message: Transforming a critical operational risk into a strategic competitive advantage through architectural innovation.
+
+Visual Cue: A simple diagram showing two database icons labeled 'Blue' and 'Green'. An arrow labeled 'Live Traffic' points to 'Blue'. A dotted arrow shows traffic can be switched to 'Green'. A double-sided arrow between them is labeled 'Bi-directional Logical Replication'.
+Slide 2: The Challenge vs. Our Solution
+The Challenge: The High Cost of Downtime
+
+Our Solution: An Advanced Blue-Green Framework
+
+Traditional maintenance introduces unavoidable downtime for database patching, upgrades, and application deployments.
+
+We establish fully independent Blue (Live) and Green (Standby) environments, ensuring complete isolation for safe, comprehensive testing.
+
+Significant Business & Operational Risk: <br> • Missed transaction windows & revenue loss <br> • Service Level Agreement (SLA) breaches <br> • Frustrated clients & damaged trust
+
+The cornerstone is a robust, bi-directional logical replication mechanism, providing real-time data consistency between the Blue and Green environments.
+
+Native Cloud Solutions Fall Short: Standard tools often fail to meet the strict zero-downtime and instantaneous rollback requirements of complex enterprise applications.
+
+This enables seamless cutovers to the Green environment after it has been fully patched, upgraded, and validated—all while live traffic continues uninterrupted on the Blue environment.
+
+High Mean Time To Recovery (MTTR): Rollback procedures are slow, complex, and risky, often taking hours or days and causing extended disruption.
+
+The architecture provides the critical capability for rapid, reliable rollback to the stable Blue environment, reducing MTTR from hours to mere minutes or seconds.
+
+Slide 3: Proven Impact & The Path Forward
+Business Impact: Realized in the Commercial Card Domain
+
+Availability: Achieved 99.9999% uptime for core database operations, completely eliminating planned downtime.
+
+Risk Reduction: Drastically reduced Mean Time To Recovery (MTTR), mitigating financial loss and ensuring regulatory compliance.
+
+Agility & Speed: Accelerated release cycles by enabling safe, iterative development and testing in a production-parallel environment.
+
+Client Satisfaction: Protected client trust and enhanced OmniBank's reputation for reliability and unparalleled service.
+
+Lessons Learned & Strategic Next Steps
+
+Key Insight: The success of this architecture hinges on selecting the right logical replication technology that supports bi-directional consistency and instantaneous cutover/rollback.
+
+Current Focus: We are actively automating the end-to-end deployment and management lifecycle of this framework to reduce manual overhead and ensure consistency.
+
+Future State: Generalize this proven reference architecture as a standardized, enterprise-wide solution for all OmniBank Global applications utilizing AWS RDBMS.
+
+Conclusion: This architecture is a key enabler of OmniBank Global's strategic objectives, delivering agility, superior reliability, and a significant competitive advantage.
