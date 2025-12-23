@@ -1,0 +1,34 @@
+Strategic Migration: Transitioning from Oracle RDS to Amazon Aurora PostgreSQL
+Executive Summary
+This document outlines the strategic rationale for migrating critical applications from Oracle RDS to Amazon Aurora PostgreSQL. By moving to a cloud-native architecture, the organization aims to reduce management overhead, eliminate restrictive licensing, and enhance system resiliency through a decoupled, distributed database model.
+
+1. What is a Cloud-Native Database?
+A cloud-native database, such as Amazon Aurora, represents a fundamental shift from traditional monolithic database architectures.
+
+The Decoupled Architecture
+Unlike traditional databases where compute and storage are tightly bound to a single server, cloud-native databases decouple these layers:
+
+The Compute Layer: Scalable instances that handle query processing and caching.
+
+The Storage Layer: A self-healing, multi-tenant fleet of storage nodes that treats the database log as the primary data source.
+
+Key Technical Advantages
+Log-Structured Storage: Only "redo logs" are written to storage, significantly reducing I/O bottlenecks compared to traditional block-storage writes.
+
+Storage Auto-scaling: Storage grows automatically (up to 128 TiB), removing the need for manual volume management.
+
+Serverless Capabilities: Compute can scale instantly based on real-time application demand, optimizing costs for unpredictable workloads.
+
+2. Why Move from Oracle to Aurora PostgreSQL?
+Economic Freedom
+Eliminating the "Oracle Tax": Replaces expensive, audited, and proprietary licenses with a transparent, pay-as-you-go model.
+
+TCO Reduction: Organizations typically see a 60% to 80% reduction in total cost of ownership (TCO).
+
+Operational Resiliency
+6-Way Replication: Aurora replicates data six times across three Availability Zones (AZs). It can sustain the loss of an entire AZ without data loss and maintains write availability even if two storage nodes fail.
+
+Rapid Failover: Failovers typically occur in under 30 seconds, as the shared storage architecture eliminates the need to "replay" logs during a crash recovery.
+
+Modernization & Talent
+Open Standards: PostgreSQL is the industry-standard open-source engine. Adopting it provides access to a vast ecosystem of tools (e.g., PostGIS, pgvector for AI) and a larger talent pool of developers.
