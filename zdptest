@@ -1,0 +1,152 @@
+import boto3
+import psycopg2
+import time
+import socket
+import random
+from datetime import datetime
+from psycopg2 import OperationalError, InterfaceError
+
+# --- Configuration ---
+REGION = 'us-east-1'  # The region where your Primary Cluster & Proxy reside
+# MUST be the Proxy Endpoint (e.g., my-proxy.proxy-xyz.us-east-1.rds.amazonaws.com)
+PROXY_ENDPOINT = 'your-rds-proxy-endpoint.proxy-xyz.us-east-1.rds.amazonaws.com'
+PORT = 5432
+# The DB user must have "IAM Authentication" enabled in the Proxy settings
+DB_USER = 'iam_user' 
+DB_NAME = 'postgres'
+
+# --- 1. IAM Authentication for RDS Proxy ---
+def get_proxy_auth_token():
+    """
+    Generates an IAM token specifically for the RDS Proxy.
+    Note: The 'DBHostname' must match the Proxy Endpoint exactly.
+    """
+    client = boto3.client('rds', region_name=REGION)
+    token = client.generate_db_auth_token(
+        DBHostname=PROXY_ENDPOINT,
+        Port=PORT,
+        DBUsername=DB_USER,
+        Region=REGION
+    )
+    return token
+
+# --- Connection Factory ---
+def create_proxy_connection():
+    """Connects to the RDS Proxy using the IAM token."""
+    try:
+        token = get_proxy_auth_token()
+        conn = psycopg2.connect(
+            host=PROXY_ENDPOINT,
+            port=PORT,
+            user=DB_USER,
+            password=token,
+            database=DB_NAME,
+            sslmode='require', # Proxy requires SSL
+            connect_timeout=5
+        )
+        return conn
+    except Exception as e:
+        print(f"❌ Proxy Connection Failed: {e}")
+        raise
+
+# --- 2. Schema Setup ---
+def setup_database():
+    """Creates the customer table if it doesn't exist."""
+    conn = create_proxy_connection()
+    try:
+        cur = conn.cursor()
+        create_query = """
+        CREATE TABLE IF NOT EXISTS global_customer_sessions (
+            session_id SERIAL PRIMARY KEY,
+            credit_card_mask VARCHAR(20),
+            client_hostname VARCHAR(100),
+            db_instance_ip VARCHAR(50),
+            proxy_endpoint VARCHAR(100),
+            connection_time TIMESTAMP,
+            latency_ms FLOAT
+        );
+        """
+        cur.execute(create_query)
+        conn.commit()
+        print("✅ Table 'global_customer_sessions' is ready.")
+    finally:
+        conn.close()
+
+# --- 3. Retriable Write & ZDP Validation Loop ---
+def run_zdp_proxy_test(duration_seconds=300):
+    conn = None
+    end_time = time.time() + duration_seconds
+    
+    print(f"\n🚀 Starting RDS Proxy ZDP Validation ({duration_seconds}s)...")
+    
+    while time.time() < end_time:
+        start_op_time = time.time()
+        try:
+            # Reconnect if dropped (Proxy usually prevents this, but good practice)
+            if conn is None or conn.closed != 0:
+                conn = create_proxy_connection()
+
+            cur = conn.cursor()
+
+            # Prepare Data
+            fake_cc = f"XXXX-XXXX-XXXX-{random.randint(1000,9999)}"
+            client_host = socket.gethostname()
+            
+            # Query Internal IP to see which DB instance the Proxy is routing to
+            # This proves failover happened behind the scenes
+            cur.execute("SELECT inet_server_addr()")
+            db_instance_ip = cur.fetchone()[0]
+
+            # Insert Data
+            insert_query = """
+            INSERT INTO global_customer_sessions 
+            (credit_card_mask, client_hostname, db_instance_ip, proxy_endpoint, connection_time, latency_ms)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            
+            # Calculate operation latency (Critical for ZDP analysis)
+            # During patching, this latency will spike as Proxy holds the connection
+            op_latency = (time.time() - start_op_time) * 1000
+            
+            cur.execute(insert_query, (
+                fake_cc, 
+                client_host, 
+                db_instance_ip, 
+                PROXY_ENDPOINT, 
+                datetime.now(),
+                op_latency
+            ))
+            conn.commit()
+            
+            # Log output
+            print(f"✅ Write Success | DB IP: {db_instance_ip} | Latency: {op_latency:.2f}ms")
+            
+            time.sleep(1) # Normal traffic pacing
+
+        except (OperationalError, InterfaceError) as e:
+            # --- ZDP FAILOVER HANDLING ---
+            print(f"⚠️  Write Failed: {e}")
+            print("   --> RDS Proxy might be switching targets. Retrying...")
+            
+            # Even with Proxy, if the failover takes > query timeout, we retry
+            try:
+                conn.close()
+            except:
+                pass
+            conn = None
+            time.sleep(1)
+
+        except Exception as e:
+            print(f"❌ Fatal Error: {e}")
+            break
+
+    if conn:
+        conn.close()
+    print("\n🏁 Validation Test Completed.")
+
+if __name__ == "__main__":
+    try:
+        setup_database()
+        run_zdp_proxy_test(duration_seconds=600)
+    except KeyboardInterrupt:
+        print("\nTest stopped.")
