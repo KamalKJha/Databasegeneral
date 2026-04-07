@@ -1,0 +1,117 @@
+Architectural Pattern Guide: Regional Affinity Model
+The Regional Affinity Model is a specialized implementation of Cellular Architecture designed for financial systems (e.g., Commercial Card Platforms) that demand strong consistency for transactional writes, low-latency regional processing, and fully automated disaster recovery.
+
+Instead of relying on complex, cross-region distributed locking, the system isolates workloads by a logical partition key—the Program ID.
+
+Strict Ownership: Every Program (e.g., P1–P5) is strongly owned by exactly one AWS region at any given time.
+
+Omnipresent Enforcement: Affinity is consistently enforced across all system layers: APIs, Domain Databases (15+), Kafka events, S3 files, and Batch Jobs.
+
+Location Independence: Routing is decoupled from the client's physical location and is driven entirely by server-side identity claims.
+
+2. High-Level Architecture Layers
+Layer A: The Global Ingress & Routing Engine
+This layer acts as the global front door and makes O(1) routing decisions.
+
+Ingress: AWS Global Accelerator or Route 53 (Latency-Based Routing) terminates the connection at the edge.
+
+Routing Compute: A lightweight edge service (Lambda@Edge, API Gateway Authorizer, or Routing Sidecar).
+
+Routing State: DynamoDB Global Table stores the source-of-truth metadata mapping (program_id -> Home_Region). Updates to this table propagate globally in <1s.
+
+Authentication: Utilizes the Token Claim Pattern. The Identity Provider (IdP) embeds the program_id into the user's JWT. The edge router decodes the JWT to find the routing key securely, preventing spoofing.
+
+Layer B: The Regional Execution Cell (The "Home Region")
+Once routed, the request is entirely processed within a highly isolated regional VPC.
+
+API Services: Execute business logic.
+
+Domain Databases: Oracle RDS or Aurora PostgreSQL handle local, strongly consistent writes.
+
+Asynchronous Processing: Regional Kafka clusters and Batch/Airflow DAGs handle background tasks.
+
+Layer C: Data Replication & Synchronization
+Database Replication: GoldenGate (Oracle) or Aurora Global Database provides asynchronous, bidirectional replication to the standby region.
+
+File Replication: Amazon S3 Cross-Region Replication (CRR) mirrors batch files and reports.
+3. The Data Model Strategy
+To enable O(1) routing and regional isolation, the database schema must be denormalized. Metadata is moved to DynamoDB, keeping the relational schema clean and focused on business entities.
+
+Core Rules:
+
+Every table must denormalize program_id and org_id.
+
+These fields are populated directly from the validated API payload/JWT.
+
+Every row must include a last_updated timestamp for conflict resolution.
+
+Reference table :
+
+CREATE TABLE customers (
+    customer_id      NUMBER(12)      NOT NULL,
+    program_id       NUMBER(10)      NOT NULL,   -- Routing Partition Key
+    org_id           NUMBER(10)      NOT NULL,   -- Secondary Partition Key
+    customer_name    VARCHAR2(200)   NOT NULL,
+    status           VARCHAR2(20)    DEFAULT 'ACTIVE',
+    last_updated     TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_customers PRIMARY KEY (customer_id)
+);
+
+CREATE TABLE transactions (
+    transaction_id   NUMBER(18)      NOT NULL,
+    card_id          NUMBER(15)      NOT NULL,
+    program_id       NUMBER(10)      NOT NULL,   -- Routing Partition Key
+    org_id           NUMBER(10)      NOT NULL,   -- Secondary Partition Key
+    amount           NUMBER(14,2)    NOT NULL,
+    trans_date       DATE            DEFAULT SYSDATE,
+    merchant_name    VARCHAR2(100),
+    status           VARCHAR2(20)    DEFAULT 'POSTED',
+    last_updated     TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_transactions PRIMARY KEY (transaction_id)
+);
+
+
+4. Sub-System Integration Rules
+Affinity must be enforced beyond the synchronous APIs to prevent data corruption.
+
+Kafka Events: Producers publish to the local regional cluster using program_id as the message key. Consumers exist in both regions but utilize an Affinity Filter (checking DynamoDB) to drop messages for programs they do not currently own.
+
+S3 & Batch Jobs: Before an Airflow DAG or Batch Lambda processes a file, it must pass an Affinity Gate. The job queries DynamoDB: "Do I still own this program?" If yes, proceed. If no, exit silently (the peer region's job will handle it).
+
+5. Automated Disaster Recovery & Conflict Resolution
+The system relies on a Health Monitor Lambda that constantly evaluates regional lag and error rates.
+
+Phase 1: Normal Operations (Happy Path)
+State: Writes are strictly affinity-routed to the designated Home Region.
+
+Replication: Bidirectional async replication is flowing.
+
+Conflicts: None. Strict ownership guarantees zero write collisions.
+
+Phase 2: Automated Failover (The "Flip")
+Triggered when the Health Monitor detects a sustained outage (e.g., 5xx errors) in Region 1.
+
+Block Evaluation: Health Monitor checks DB replication lag. Failover is strictly blocked if lag > 30 seconds to prevent catastrophic data loss.
+
+State Change: If lag is acceptable, the Health Monitor updates the DynamoDB Global Table, shifting the program_id owner to Region 2.
+
+Buffer: In-flight writes to Region 1 fail or are briefly buffered by the edge router.
+
+Resume: Global routing instantly shifts. Region 2 API/DB assumes ownership and begins accepting writes.
+
+Phase 3: Conflict Resolution (Late Packets)
+Because replication is asynchronous, a failover might occur with a few milliseconds of lag.
+
+The Problem: A late-arriving replication packet from Region 1 hits Region 2 after Region 2 has already accepted a new write for the same row.
+
+The Solution: The database layer enforces a USEMAX(last_updated) rule during replication apply. If a conflict occurs, the row with the most recent timestamp wins, guaranteeing that the newer data accepted in Region 2 is not overwritten by the delayed packet from Region 1.
+
+Phase 4: Automated Failback
+Triggered when Region 1 is healthy and ready to resume primary duties.
+
+Zero-Lag Confirmation: The Health Monitor verifies that Region 1 is 100% caught up with Region 2 (Zero replication lag). Failback cannot occur if lag exists.
+
+State Restoration: DynamoDB Global Table is updated to restore Region 1 as the owner.
+
+Routing Flip: Traffic smoothly routes back to Region 1.
+
